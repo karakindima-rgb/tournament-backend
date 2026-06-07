@@ -17,6 +17,7 @@ class Tournament(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     started = Column(Boolean, default=False)
+    finished = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     players = relationship("Player", back_populates="tournament", cascade="all,delete")
     games = relationship("Game", back_populates="tournament", cascade="all,delete")
@@ -41,15 +42,21 @@ class Game(Base):
     score_b = Column(Integer, nullable=True)
     tournament = relationship("Tournament", back_populates="games")
 
-# Migrate: drop old 1v1 schema if detected
+# Migrate
 with engine.connect() as conn:
     insp = sa_inspect(engine)
     if insp.has_table("games"):
-        cols = {c["name"] for c in insp.get_columns("games")}
-        if "player_a" in cols:
+        game_cols = {c["name"] for c in insp.get_columns("games")}
+        if "player_a" in game_cols:
+            # Old 1v1 schema — drop everything
             conn.execute(text("DROP TABLE IF EXISTS games"))
             conn.execute(text("DROP TABLE IF EXISTS players"))
             conn.execute(text("DROP TABLE IF EXISTS tournaments"))
+            conn.commit()
+    if insp.has_table("tournaments"):
+        t_cols = {c["name"] for c in insp.get_columns("tournaments")}
+        if "finished" not in t_cols:
+            conn.execute(text("ALTER TABLE tournaments ADD COLUMN finished BOOLEAN DEFAULT 0"))
             conn.commit()
 
 Base.metadata.create_all(bind=engine)
@@ -160,22 +167,30 @@ class ScoreIn(BaseModel):
 @app.get("/api/health")
 def health(): return {"status": "ok"}
 
+def t_dict(t: Tournament) -> dict:
+    return {"id": t.id, "name": t.name, "started": t.started, "finished": bool(t.finished), "created_at": t.created_at}
+
 @app.post("/api/tournaments")
 def create_t(body: TCreate, s: Session = Depends(db)):
     t = Tournament(name=body.name)
     s.add(t); s.commit(); s.refresh(t)
-    return {"id": t.id, "name": t.name, "started": t.started, "created_at": t.created_at}
+    return t_dict(t)
 
 @app.get("/api/tournaments")
 def list_t(s: Session = Depends(db)):
-    return [{"id": t.id, "name": t.name, "started": t.started, "created_at": t.created_at}
-            for t in s.query(Tournament).all()]
+    return [t_dict(t) for t in s.query(Tournament).all()]
 
 @app.get("/api/tournaments/{tid}")
 def get_tournament(tid: int, s: Session = Depends(db)):
     t = get_t(tid, s)
-    return {"id": t.id, "name": t.name, "started": t.started,
-            "players": [{"id": p.id, "name": p.name} for p in t.players]}
+    return {**t_dict(t), "players": [{"id": p.id, "name": p.name} for p in t.players]}
+
+@app.post("/api/tournaments/{tid}/finish")
+def finish_t(tid: int, s: Session = Depends(db)):
+    t = get_t(tid, s)
+    t.finished = True
+    s.commit()
+    return t_dict(t)
 
 @app.post("/api/tournaments/{tid}/players")
 def add_player(tid: int, body: PCreate, s: Session = Depends(db)):
@@ -246,10 +261,17 @@ def set_score(gid: int, body: ScoreIn, s: Session = Depends(db)):
 @app.get("/api/tournaments/{tid}/standings")
 def standings(tid: int, s: Session = Depends(db)):
     t = get_t(tid, s)
+    all_games = s.query(Game).filter(Game.tournament_id == tid).all()
+    # Only count circles where every game is scored
+    from collections import defaultdict
+    by_circle = defaultdict(list)
+    for g in all_games:
+        by_circle[g.circle or 1].append(g)
+    complete = {c for c, gs in by_circle.items() if all(g.score_a is not None for g in gs)}
     stats = {p.id: {"player_id": p.id, "name": p.name, "wins": 0, "losses": 0, "games_played": 0, "diff": 0}
              for p in t.players}
-    for g in s.query(Game).filter(Game.tournament_id == tid).all():
-        if g.score_a is None:
+    for g in all_games:
+        if (g.circle or 1) not in complete:
             continue
         team_a = json.loads(g.team_a)
         team_b = json.loads(g.team_b)
