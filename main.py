@@ -65,30 +65,22 @@ def combinations2(lst):
 def generate_schedule(players):
     n = len(players)
     if n < 3: return []
-    scores = {p: 0 for p in players}
     rounds = []
-    total_rounds = n if n % 2 == 1 else n - 1
-    for _ in range(total_rounds):
-        pairs = combinations2(players)
-        # choose resting player (minimize max score among candidates)
-        if n % 2 == 1:
-            rest = min(players, key=lambda p: scores[p])
-            active = [p for p in players if p != rest]
-        else:
-            rest = None
-            active = players[:]
-        # greedy matching
-        used = set()
-        games = []
-        for a, b in pairs:
-            if a in used or b in used: continue
-            if rest and (a == rest or b == rest): continue
-            games.append((a, b))
-            used.add(a); used.add(b)
-            if len(used) == len(active): break
-        for a, b in games:
-            scores[a] += 1; scores[b] += 1
-        rounds.append({"games": games, "resting": rest})
+    # Round-robin using circle method
+    if n % 2 == 1:
+        lst = players[:]
+        for i in range(n):
+            rest = lst[0]
+            active = lst[1:]
+            games = [(active[j], active[n - 2 - j]) for j in range((n - 1) // 2)]
+            rounds.append({"games": games, "resting": rest})
+            lst = [lst[0]] + [lst[-1]] + lst[1:-1]
+    else:
+        lst = players[:]
+        for i in range(n - 1):
+            games = [(lst[j], lst[n - 1 - j]) for j in range(n // 2)]
+            rounds.append({"games": games, "resting": None})
+            lst = [lst[0]] + [lst[-1]] + lst[1:-1]
     return rounds
 
 # --- API ---
