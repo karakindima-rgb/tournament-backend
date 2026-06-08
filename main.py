@@ -1,13 +1,17 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, DateTime, inspect as sa_inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker, relationship
 from pydantic import BaseModel
 from datetime import datetime, timezone
 import os, json
 
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///tournament.db")
-engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
+# Render gives postgres://, SQLAlchemy needs postgresql://
+if DB_URL.startswith("postgres://"):
+    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+_kwargs = {"connect_args": {"check_same_thread": False}} if DB_URL.startswith("sqlite") else {}
+engine = create_engine(DB_URL, **_kwargs)
 SessionLocal = sessionmaker(bind=engine)
 
 class Base(DeclarativeBase): pass
@@ -41,23 +45,6 @@ class Game(Base):
     score_a = Column(Integer, nullable=True)
     score_b = Column(Integer, nullable=True)
     tournament = relationship("Tournament", back_populates="games")
-
-# Migrate
-with engine.connect() as conn:
-    insp = sa_inspect(engine)
-    if insp.has_table("games"):
-        game_cols = {c["name"] for c in insp.get_columns("games")}
-        if "player_a" in game_cols:
-            # Old 1v1 schema — drop everything
-            conn.execute(text("DROP TABLE IF EXISTS games"))
-            conn.execute(text("DROP TABLE IF EXISTS players"))
-            conn.execute(text("DROP TABLE IF EXISTS tournaments"))
-            conn.commit()
-    if insp.has_table("tournaments"):
-        t_cols = {c["name"] for c in insp.get_columns("tournaments")}
-        if "finished" not in t_cols:
-            conn.execute(text("ALTER TABLE tournaments ADD COLUMN finished BOOLEAN DEFAULT 0"))
-            conn.commit()
 
 Base.metadata.create_all(bind=engine)
 
